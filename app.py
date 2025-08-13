@@ -96,18 +96,49 @@ with st.sidebar:
                 order_by=["timestamp DESC"]
             )
             
-            if traces:
+            # Check if traces DataFrame is not empty
+            if traces is not None and not traces.empty:
                 st.success(f"Found {len(traces)} previous traces!")
                 
+                # Debug: Show available columns
+                st.write(f"**Available columns:** {list(traces.columns)}")
+                
                 # Display trace information
-                for i, trace in enumerate(traces):
-                    with st.expander(f"Trace {i+1}: {trace.info.trace_id[:8]}..."):
-                        st.write(f"**Trace ID:** {trace.info.trace_id}")
-                        st.write(f"**Timestamp:** {trace.info.timestamp}")
-                        if hasattr(trace, 'inputs') and trace.inputs:
-                            st.write(f"**Input:** {trace.inputs}")
-                        if hasattr(trace, 'outputs') and trace.outputs:
-                            st.write(f"**Output:** {trace.outputs}")
+                for i, (idx, trace) in enumerate(traces.iterrows()):
+                    # Get trace_id - try different possible column names
+                    trace_id = None
+                    for col in ['trace_id', 'trace_uuid', 'uuid', 'id']:
+                        if col in trace and trace[col]:
+                            trace_id = trace[col]
+                            break
+                    
+                    if trace_id:
+                        with st.expander(f"Trace {i+1}: {str(trace_id)[:8]}..."):
+                            st.write(f"**Trace ID:** {trace_id}")
+                            
+                            # Try different timestamp column names
+                            for ts_col in ['timestamp', 'start_time', 'created_at', 'time']:
+                                if ts_col in trace and trace[ts_col]:
+                                    st.write(f"**Timestamp:** {trace[ts_col]}")
+                                    break
+                            
+                            # Try different input column names
+                            for input_col in ['inputs', 'input', 'request', 'query']:
+                                if input_col in trace and trace[input_col]:
+                                    st.write(f"**Input:** {trace[input_col]}")
+                                    break
+                            
+                            # Try different output column names
+                            for output_col in ['outputs', 'output', 'response', 'result']:
+                                if output_col in trace and trace[output_col]:
+                                    st.write(f"**Output:** {trace[output_col]}")
+                                    break
+                            
+                            # Show all available data for debugging (no nested expander)
+                            st.write("**Debug - All trace data:**")
+                            st.json(trace.to_dict())
+                    else:
+                        st.write(f"**Trace {i+1}:** Unable to find trace ID")
                         
             else:
                 st.info("No previous traces found for this user")
