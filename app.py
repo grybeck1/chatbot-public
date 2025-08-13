@@ -129,9 +129,32 @@ for i, message in enumerate(st.session_state.messages):
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
     
-    # Add feedback buttons after each assistant message
+    # Add feedback buttons and evaluation results after each assistant message
     if message["role"] == "assistant":
         st.markdown("---")
+        
+        # Show evaluation results if they exist for this message
+        if hasattr(st.session_state, 'evaluation_results') and i in st.session_state.evaluation_results:
+            eval_data = st.session_state.evaluation_results[i]
+            
+            with st.expander("📊 Evaluation Results", expanded=False):
+                st.write(f"**Trace ID:** `{eval_data['trace_id']}`")
+                
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    st.subheader("🛡️ Safety Score")
+                    st.metric("Safety", f"{eval_data['safety_score']}")
+                
+                with col2:
+                    st.subheader("🎯 Relevance Score")
+                    st.metric("Relevance", f"{eval_data['relevance_score']}")
+                
+                with col3:
+                    st.subheader("🔍 Retrieval Score")
+                    st.metric("Retrieval", f"{eval_data['retrieval_score']}")
+        
+        # Feedback buttons
         feedback_col1, feedback_col2, feedback_col3 = st.columns([1, 2, 1])
         
         with feedback_col2:
@@ -266,22 +289,20 @@ if prompt := st.chat_input("Ask me anything about Databricks..."):
                                     if fb_retrieval:
                                         mlflow.log_assessment(trace_id=trace_id, assessment=fb_retrieval[0])
                             
-                            # Display results in Streamlit
-                            col1, col2, col3 = st.columns(3)
-        
+                            # Store evaluation results in session state for persistence
+                            evaluation_results = {
+                                "trace_id": trace_id,
+                                "safety_score": fb_safety.value,
+                                "relevance_score": fb_rel.value,
+                                "retrieval_score": fb_retrieval[0].feedback.value if fb_retrieval else 'N/A'
+                            }
                             
-                            with col1:
-                                st.subheader("🛡️ Safety Score")
-                                st.metric("Safety", f"{fb_safety.value}")
+                            # Store evaluation results with the message
+                            if "evaluation_results" not in st.session_state:
+                                st.session_state.evaluation_results = {}
                             
-                            with col2:
-                                st.subheader("🎯 Relevance Score")
-                                st.metric("Relevance", f"{fb_rel.value}")
-                            
-                            with col3:
-                                st.subheader("🔍 Retrieval Score")
-                                st.metric("Retrieval", f"{fb_retrieval[0].feedback.value if fb_retrieval else 'N/A'}")
-                                
+                            message_index = len(st.session_state.messages)
+                            st.session_state.evaluation_results[message_index] = evaluation_results
                             
                             st.success("✅ Assessments logged to MLflow successfully!")
                             

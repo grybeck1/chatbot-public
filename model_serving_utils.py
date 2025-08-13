@@ -9,7 +9,7 @@ mlflow.langchain.autolog()
 def query_endpoint(endpoint_name, messages, user="unknown", use_tools=True) -> dict:
     """Simple query using ChatDatabricks with tool execution capability"""
 
-    mlflow.update_current_trace(tags={"user": user})
+    mlflow.update_current_trace(tags={"user": user if user else "unknown"})
     # Initialize the retriever tool
     vs_tool = VectorSearchRetrieverTool(
         index_name="main.dbdemos_rag_chatbot.databricks_documentation_vs_index",
@@ -80,34 +80,7 @@ def query_endpoint(endpoint_name, messages, user="unknown", use_tools=True) -> d
         response = llm.invoke(langchain_messages)
         response_content = response.content
     
-    # Get the trace ID - try multiple methods
-    trace_id = mlflow.get_active_trace_id()
-    
-    # Debug: Print what we got
-    print(f"🔍 MLflow active trace ID: {trace_id}")
-    
-    # Add user tag to the trace if we have a trace_id
-    if trace_id:
-        try:
-            # Add username tag to the trace for filtering
-            username = "gabe.rybeck@databricks.com"  # You can make this dynamic
-            mlflow.set_tag("user", username)
-            print(f"🔍 Added user tag: {username}")
-        except Exception as e:
-            print(f"🔍 Error setting user tag: {e}")
-    
-    # Alternative: try to get the trace from the current run if active trace ID is None
-    if not trace_id:
-        try:
-            # Check if there's an active run
-            active_run = mlflow.active_run()
-            if active_run:
-                trace_id = active_run.info.run_id
-                print(f"🔍 Using active run ID as trace: {trace_id}")
-        except Exception as e:
-            print(f"🔍 Error getting active run: {e}")
-    
     return {
         "content": response_content,
-        "trace_id": trace_id,
+        "trace_id": mlflow.get_active_trace_id(),
     }

@@ -58,3 +58,4 @@ mlartifacts/
 # Temporary files
 *.tmp
 *.zip
+.databricks
