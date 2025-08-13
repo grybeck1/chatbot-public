@@ -1,40 +1,113 @@
 import os
 import mlflow
 from databricks_langchain import VectorSearchRetrieverTool, ChatDatabricks
-    
-# Try to initialize Vector Search tool using databricks_langchain
-from databricks_langchain import VectorSearchRetrieverTool, ChatDatabricks
+from mlflow.deployments import get_deploy_client
+
 mlflow.langchain.autolog()
 
-# Simple query function using databricks_langchain
-def query_endpoint(endpoint_name, messages, max_tokens, use_tools=True) -> str:
-    """Simple query using ChatDatabricks with optional tools, returns trace_id"""
+@mlflow.trace
+def query_endpoint(endpoint_name, messages, user="unknown", use_tools=True) -> dict:
+    """Simple query using ChatDatabricks with tool execution capability"""
 
+    mlflow.update_current_trace(tags={"user": user})
     # Initialize the retriever tool
     vs_tool = VectorSearchRetrieverTool(
         index_name="main.dbdemos_rag_chatbot.databricks_documentation_vs_index",
         tool_name="databricks_docs_retriever",
         tool_description="Retrieves information about Databricks products from official Databricks documentation."
     )
-    #print(vs_tool.invoke("Databricks Agent Framework?"))
-    print("✅ Vector Search tool initialized successfully")
-
     # Initialize ChatDatabricks LLM
     llm = ChatDatabricks(endpoint=endpoint_name)
     
-    # Bind tools if available and requested
+    # Convert OpenAI format messages to LangChain format
+    from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+    
+    langchain_messages = []
+    for msg in messages:
+        if msg["role"] == "system":
+            langchain_messages.append(SystemMessage(content=msg["content"]))
+        elif msg["role"] == "user":
+            langchain_messages.append(HumanMessage(content=msg["content"]))
+        elif msg["role"] == "assistant":
+            langchain_messages.append(AIMessage(content=msg["content"]))
+    
     if use_tools:
+        # Bind tools to the LLM
         llm_with_tools = llm.bind_tools([vs_tool])
+        
+        # First call - model may decide to call tools
+        response = llm_with_tools.invoke(langchain_messages)
+        
+        # Check if model wants to call tools
+        if hasattr(response, 'tool_calls') and response.tool_calls:
+            print(f"🔧 Model is calling {len(response.tool_calls)} tool(s)")
+            
+            # Execute each tool call
+            tool_results = []
+            for tool_call in response.tool_calls:
+                tool_name = tool_call.get('name', 'unknown')
+                tool_args = tool_call.get('args', {})
+                
+                print(f"📞 Calling tool: {tool_name} with args: {tool_args}")
+                
+                if tool_name == "databricks_docs_retriever":
+                    # Execute the vector search tool
+                    try:
+                        tool_result = vs_tool.invoke(tool_args)
+                        tool_results.append(f"Tool Result: {tool_result}")
+                        print(f"✅ Tool executed successfully")
+                    except Exception as e:
+                        tool_results.append(f"Tool Error: {str(e)}")
+                        print(f"❌ Tool execution failed: {e}")
+            
+            # Create follow-up messages with tool results
+            if tool_results:
+                # Add tool results as a new system message
+                enhanced_messages = langchain_messages + [
+                    SystemMessage(content="Retrieved context:\n" + "\n".join(tool_results))
+                ]
+                # Final call with tool results
+                final_response = llm.invoke(enhanced_messages)
+                response_content = final_response.content
+            else:
+                response_content = response.content
+        else:
+            # No tool calls, use response as-is
+            response_content = response.content
+            print("💬 Model responded without calling tools")
     else:
-        llm_with_tools = llm
+        # No tools enabled - use full message history
+        response = llm.invoke(langchain_messages)
+        response_content = response.content
     
-    # Convert messages to LangChain format (just take the last user message for simplicity)
-    user_message = messages[-1]["content"] if messages else ""
+    # Get the trace ID - try multiple methods
+    trace_id = mlflow.get_active_trace_id()
     
-    # Make the chat completion call
-    response = llm_with_tools.invoke(user_message)
+    # Debug: Print what we got
+    print(f"🔍 MLflow active trace ID: {trace_id}")
     
-    # Return in the expected format
-    return {"content": response.content,
-            "trace_id": mlflow.get_active_trace_id(),
-            "trace": response}
+    # Add user tag to the trace if we have a trace_id
+    if trace_id:
+        try:
+            # Add username tag to the trace for filtering
+            username = "gabe.rybeck@databricks.com"  # You can make this dynamic
+            mlflow.set_tag("user", username)
+            print(f"🔍 Added user tag: {username}")
+        except Exception as e:
+            print(f"🔍 Error setting user tag: {e}")
+    
+    # Alternative: try to get the trace from the current run if active trace ID is None
+    if not trace_id:
+        try:
+            # Check if there's an active run
+            active_run = mlflow.active_run()
+            if active_run:
+                trace_id = active_run.info.run_id
+                print(f"🔍 Using active run ID as trace: {trace_id}")
+        except Exception as e:
+            print(f"🔍 Error getting active run: {e}")
+    
+    return {
+        "content": response_content,
+        "trace_id": trace_id,
+    }
