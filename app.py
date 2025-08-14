@@ -5,7 +5,7 @@ import os
 import logging
 
 # Set up logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 # Streamlit app
@@ -57,13 +57,6 @@ with st.sidebar:
         help="Select the model to use for responses"
     )
     
-    # Vector search toggle
-    use_tools = st.checkbox(
-        "🔍 Enable Vector Search",
-        value=True,
-        help="Enable vector search for retrieving relevant context"
-    )
-    
     # System prompt editor
     st.subheader("🎯 System Prompt")
     system_prompt = st.text_area(
@@ -100,45 +93,36 @@ with st.sidebar:
             if traces is not None and not traces.empty:
                 st.success(f"Found {len(traces)} previous traces!")
                 
-                # Debug: Show available columns
-                st.write(f"**Available columns:** {list(traces.columns)}")
+                # Extract messages from traces and add to session state
+                all_previous_messages = []
                 
-                # Display trace information
-                for i, (idx, trace) in enumerate(traces.iterrows()):
-                    # Get trace_id - try different possible column names
-                    trace_id = None
-                    for col in ['trace_id', 'trace_uuid', 'uuid', 'id']:
-                        if col in trace and trace[col]:
-                            trace_id = trace[col]
-                            break
+                # Iterate through traces in reverse order (oldest first)
+                for i, (idx, trace) in enumerate(reversed(list(traces.iterrows()))):
+                    # Try different column names for input/output
+                    if 'request' in trace and trace['request']:
+                        # Extract messages from request
+                        if isinstance(trace['request'], dict) and 'messages' in trace['request']:
+                            request_messages = trace['request']['messages']
+                            if isinstance(request_messages, list):
+                                # Filter out system messages to avoid duplicates
+                                non_system_messages = [msg for msg in request_messages if msg.get('role') != 'system']
+                                all_previous_messages.extend(non_system_messages)
                     
-                    if trace_id:
-                        with st.expander(f"Trace {i+1}: {str(trace_id)[:8]}..."):
-                            st.write(f"**Trace ID:** {trace_id}")
-                            
-                            # Try different timestamp column names
-                            for ts_col in ['timestamp', 'start_time', 'created_at', 'time']:
-                                if ts_col in trace and trace[ts_col]:
-                                    st.write(f"**Timestamp:** {trace[ts_col]}")
-                                    break
-                            
-                            # Try different input column names
-                            for input_col in ['inputs', 'input', 'request', 'query']:
-                                if input_col in trace and trace[input_col]:
-                                    st.write(f"**Input:** {trace[input_col]}")
-                                    break
-                            
-                            # Try different output column names
-                            for output_col in ['outputs', 'output', 'response', 'result']:
-                                if output_col in trace and trace[output_col]:
-                                    st.write(f"**Output:** {trace[output_col]}")
-                                    break
-                            
-                            # Show all available data for debugging (no nested expander)
-                            st.write("**Debug - All trace data:**")
-                            st.json(trace.to_dict())
-                    else:
-                        st.write(f"**Trace {i+1}:** Unable to find trace ID")
+                    # Add response message if available
+                    if 'response' in trace and trace['response']:
+                        if isinstance(trace['response'], dict) and 'content' in trace['response']:
+                            all_previous_messages.append({
+                                "role": "assistant", 
+                                "content": trace['response']['content']
+                            })
+                
+                # Add previous messages to session state if not already present
+                if all_previous_messages and not hasattr(st.session_state, 'previous_loaded'):
+                    # Insert at the beginning of session messages (after any existing messages)
+                    st.session_state.messages = all_previous_messages + st.session_state.messages
+                    st.session_state.previous_loaded = True
+                    st.write(f"🔍 Added {len(all_previous_messages)} messages from previous traces to session")
+                    st.rerun()  # Rerun to display the updated messages    
                         
             else:
                 st.info("No previous traces found for this user")
@@ -267,15 +251,15 @@ if prompt := st.chat_input("Ask me anything about Databricks..."):
                 ] + st.session_state.messages
                 
                 # Get response from model
-                response_dict = query_endpoint(
+                response_message = query_endpoint(
                     endpoint_name=selected_model,
                     messages=messages,
-                    user=user_name,
-                    use_tools=use_tools,
+                    max_tokens=1000,
+                    user_name=user_name,
                 )
                 
-                assistant_response = response_dict["content"]
-                trace_id = response_dict.get("trace_id")
+                assistant_response = response_message["content"]
+                trace_id = mlflow.get_last_active_trace_id()
                 
                 # Debug: Show what trace_id we got
                 print(f"🔍 Received trace_id: {trace_id}")
@@ -313,12 +297,11 @@ if prompt := st.chat_input("Ask me anything about Databricks..."):
                                 # Add retrieval relevance if vector search is enabled
                                 fb_retrieval = None
                                 trace = mlflow.get_trace(trace_id=trace_id)
-                                if use_tools:
-                                    fb_retrieval = RetrievalRelevance()(
-                                        trace=trace
-                                    )
-                                    if fb_retrieval:
-                                        mlflow.log_assessment(trace_id=trace_id, assessment=fb_retrieval[0])
+                                fb_retrieval = RetrievalRelevance()(
+                                    trace=trace
+                                )
+                                if fb_retrieval:
+                                    mlflow.log_assessment(trace_id=trace_id, assessment=fb_retrieval[0])
                             
                             # Store evaluation results in session state for persistence
                             evaluation_results = {
@@ -342,9 +325,6 @@ if prompt := st.chat_input("Ask me anything about Databricks..."):
                             st.write("**Error details:**")
                             st.exception(eval_error)
                 
-                # Show status indicators
-                if use_tools:
-                    st.caption("🔍 Vector search enabled")
                     
             except Exception as e:
                 st.error(f"Error: {str(e)}")
